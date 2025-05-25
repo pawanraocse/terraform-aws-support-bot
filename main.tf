@@ -335,6 +335,11 @@ resource "aws_bedrockagent_knowledge_base" "support_kb" {
   name     = "${var.project_name}-support-kb"
   role_arn = aws_iam_role.bedrock_kb_role.arn
 
+  depends_on = [
+    aws_opensearchserverless_collection.knowledge_base_collection,
+    aws_opensearchserverless_access_policy.knowledge_base_access
+  ]
+
   knowledge_base_configuration {
     vector_knowledge_base_configuration {
       embedding_model_arn = "arn:aws:bedrock:${data.aws_region.current.name}::foundation-model/amazon.titan-embed-text-v1"
@@ -345,11 +350,11 @@ resource "aws_bedrockagent_knowledge_base" "support_kb" {
   storage_configuration {
     opensearch_serverless_configuration {
       collection_arn    = aws_opensearchserverless_collection.knowledge_base_collection.arn
-      vector_index_name = "support-index"
+      vector_index_name = "bedrock-knowledge-base-default-index"
       field_mapping {
-        vector_field   = "vector"
-        text_field     = "text"
-        metadata_field = "metadata"
+        vector_field   = "bedrock-knowledge-base-default-vector"
+        text_field     = "bedrock-knowledge-base-default-text"
+        metadata_field = "bedrock-knowledge-base-default-metadata"
       }
     }
     type = "OPENSEARCH_SERVERLESS"
