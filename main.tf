@@ -330,6 +330,71 @@ resource "aws_opensearchserverless_collection" "knowledge_base_collection" {
   ]
 }
 
+# Create OpenSearch index before Knowledge Base
+resource "null_resource" "create_opensearch_index" {
+  depends_on = [aws_opensearchserverless_collection.knowledge_base_collection]
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      python3 -c "
+import boto3, requests, json, time
+from botocore.auth import SigV4Auth
+from botocore.awsrequest import AWSRequest
+
+print('Creating OpenSearch index...')
+
+# Wait for collection to be fully ready
+time.sleep(30)
+
+client = boto3.client('opensearchserverless', region_name='us-east-1')
+response = client.batch_get_collection(ids=['${aws_opensearchserverless_collection.knowledge_base_collection.id}'])
+endpoint = response['collectionDetails'][0]['collectionEndpoint']
+
+print(f'Collection endpoint: {endpoint}')
+
+index_body = {
+    'settings': {
+        'index': {
+            'knn': True,
+            'knn.algo_param.ef_search': 512,
+            'knn.algo_param.ef_construction': 512
+        }
+    },
+    'mappings': {
+        'properties': {
+            'vector': {
+                'type': 'knn_vector',
+                'dimension': 1536,
+                'method': {
+                    'name': 'hnsw',
+                    'engine': 'nmslib',
+                    'parameters': {
+                        'ef_construction': 512,
+                        'm': 16
+                    }
+                }
+            },
+            'text': {'type': 'text'},
+            'metadata': {'type': 'text'}
+        }
+    }
+}
+
+url = f'{endpoint}/vector-index'
+request = AWSRequest(method='PUT', url=url, data=json.dumps(index_body), headers={'Content-Type': 'application/json'})
+SigV4Auth(boto3.Session().get_credentials(), 'aoss', 'us-east-1').add_auth(request)
+response = requests.put(url, data=request.body, headers=dict(request.headers))
+print(f'Index creation status: {response.status_code}')
+if response.status_code in [200, 201]:
+    print('✅ Index created successfully!')
+else:
+    print(f'❌ Error: {response.text}')
+    exit(1)
+"
+    EOT
+  }
+}
+
 # Bedrock Knowledge Base
 resource "aws_bedrockagent_knowledge_base" "support_kb" {
   name     = "${var.project_name}-support-kb"
@@ -337,7 +402,8 @@ resource "aws_bedrockagent_knowledge_base" "support_kb" {
 
   depends_on = [
     aws_opensearchserverless_collection.knowledge_base_collection,
-    aws_opensearchserverless_access_policy.knowledge_base_access
+    aws_opensearchserverless_access_policy.knowledge_base_access,
+    null_resource.create_opensearch_index
   ]
 
   knowledge_base_configuration {
@@ -350,11 +416,11 @@ resource "aws_bedrockagent_knowledge_base" "support_kb" {
   storage_configuration {
     opensearch_serverless_configuration {
       collection_arn    = aws_opensearchserverless_collection.knowledge_base_collection.arn
-      vector_index_name = "bedrock-knowledge-base-default-index"
+      vector_index_name = "vector-index"
       field_mapping {
-        vector_field   = "bedrock-knowledge-base-default-vector"
-        text_field     = "bedrock-knowledge-base-default-text"
-        metadata_field = "bedrock-knowledge-base-default-metadata"
+        vector_field   = "vector"
+        text_field     = "text"
+        metadata_field = "metadata"
       }
     }
     type = "OPENSEARCH_SERVERLESS"
