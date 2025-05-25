@@ -1,10 +1,17 @@
-# Terraform files
-*.tfstate
-*.tfstate.*
-*.tfvars
-!terraform.tfvars.example
-.terraform/
-.terraform.lock.hcl
+# Python files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+pip-log.txt
+
+# AWS files
+.aws/
+*.pem
 
 # Environment files
 .env
