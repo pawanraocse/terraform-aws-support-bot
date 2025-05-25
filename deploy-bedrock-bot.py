@@ -252,7 +252,28 @@ def create_bedrock_agent(lambda_arn):
         agent_id = response['agent']['agentId']
         print_status(f"Bedrock agent created: {agent_id}")
 
-        # Create action group separately
+        # Wait for agent to be ready
+        print_info("Waiting for agent to be ready...")
+        max_wait = 60  # Wait up to 60 seconds
+        for i in range(max_wait):
+            try:
+                agent_response = bedrock_agent.get_agent(agentId=agent_id)
+                agent_status = agent_response['agent']['agentStatus']
+                print_info(f"Agent status: {agent_status}")
+
+                if agent_status == 'NOT_PREPARED':
+                    print_status("Agent is ready for configuration")
+                    break
+                elif agent_status in ['FAILED', 'DELETING']:
+                    print_error(f"Agent creation failed with status: {agent_status}")
+                    raise Exception(f"Agent creation failed: {agent_status}")
+                else:
+                    time.sleep(2)
+            except ClientError as e:
+                print_error(f"Error checking agent status: {e}")
+                time.sleep(2)
+
+        # Create action group separately (optional)
         print_info("Creating action group...")
         try:
             bedrock_agent.create_agent_action_group(
@@ -281,11 +302,16 @@ def create_bedrock_agent(lambda_arn):
             print_status("Action group created")
         except ClientError as e:
             print_error(f"Failed to create action group: {e}")
-            # Continue anyway - agent still works without action group
+            print_info("Agent will work without action group")
 
         # Prepare agent
         print_info("Preparing agent...")
-        bedrock_agent.prepare_agent(agentId=agent_id)
+        try:
+            bedrock_agent.prepare_agent(agentId=agent_id)
+            print_status("Agent prepared successfully")
+        except ClientError as e:
+            print_error(f"Failed to prepare agent: {e}")
+            print_info("Agent can still be used in DRAFT mode")
 
         return agent_id
 
