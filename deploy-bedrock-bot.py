@@ -40,19 +40,19 @@ def get_account_id():
 def create_s3_bucket():
     """Create S3 bucket for knowledge base content"""
     print_info("Creating S3 bucket...")
-    
+
     account_id = get_account_id()
     bucket_name = f"{PROJECT_NAME}-kb-content-{account_id}"
-    
+
     try:
         s3.create_bucket(Bucket=bucket_name)
-        
+
         # Configure bucket settings
         s3.put_bucket_versioning(
             Bucket=bucket_name,
             VersioningConfiguration={'Status': 'Enabled'}
         )
-        
+
         s3.put_bucket_encryption(
             Bucket=bucket_name,
             ServerSideEncryptionConfiguration={
@@ -63,7 +63,7 @@ def create_s3_bucket():
                 }]
             }
         )
-        
+
         s3.put_public_access_block(
             Bucket=bucket_name,
             PublicAccessBlockConfiguration={
@@ -73,10 +73,10 @@ def create_s3_bucket():
                 'RestrictPublicBuckets': True
             }
         )
-        
+
         print_status(f"S3 bucket created: {bucket_name}")
         return bucket_name
-        
+
     except ClientError as e:
         if e.response['Error']['Code'] == 'BucketAlreadyOwnedByYou':
             print_status(f"S3 bucket already exists: {bucket_name}")
@@ -107,7 +107,7 @@ def create_iam_role(role_name, assume_role_policy, description):
 def create_lambda_function():
     """Create Lambda function for fallback responses"""
     print_info("Creating Lambda function...")
-    
+
     # Create Lambda execution role
     lambda_role_policy = {
         "Version": "2012-10-17",
@@ -117,13 +117,13 @@ def create_lambda_function():
             "Action": "sts:AssumeRole"
         }]
     }
-    
+
     lambda_role_arn = create_iam_role(
         f"{PROJECT_NAME}-lambda-role",
         lambda_role_policy,
         "Lambda execution role for Bedrock support bot"
     )
-    
+
     # Attach basic execution policy
     try:
         iam.attach_role_policy(
@@ -133,7 +133,11 @@ def create_lambda_function():
     except ClientError as e:
         if e.response['Error']['Code'] != 'EntityAlreadyExists':
             print_error(f"Failed to attach Lambda policy: {e}")
-    
+
+    # Wait for IAM role to propagate
+    print_info("Waiting for IAM role to propagate...")
+    time.sleep(15)
+
     # Create Lambda function code
     lambda_code = '''
 def handler(event, context):
@@ -146,15 +150,15 @@ def handler(event, context):
         }
     }
 '''
-    
+
     # Create ZIP file in memory
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
         zip_file.writestr('lambda_function.py', lambda_code)
     zip_buffer.seek(0)
-    
+
     function_name = f"{PROJECT_NAME}-fallback-function"
-    
+
     try:
         response = lambda_client.create_function(
             FunctionName=function_name,
@@ -165,7 +169,7 @@ def handler(event, context):
             Description='Fallback function for Bedrock support bot',
             Timeout=30
         )
-        
+
         # Add permission for Bedrock to invoke Lambda
         lambda_client.add_permission(
             FunctionName=function_name,
@@ -174,10 +178,10 @@ def handler(event, context):
             Principal='bedrock.amazonaws.com',
             SourceArn=f"arn:aws:bedrock:{REGION}:{get_account_id()}:agent/*"
         )
-        
+
         print_status(f"Lambda function created: {function_name}")
         return response['FunctionArn']
-        
+
     except ClientError as e:
         if e.response['Error']['Code'] == 'ResourceConflictException':
             response = lambda_client.get_function(FunctionName=function_name)
@@ -190,7 +194,7 @@ def handler(event, context):
 def create_bedrock_agent(lambda_arn):
     """Create Bedrock Agent without Knowledge Base (simpler approach)"""
     print_info("Creating Bedrock Agent...")
-    
+
     # Create Bedrock agent role
     agent_role_policy = {
         "Version": "2012-10-17",
@@ -200,13 +204,13 @@ def create_bedrock_agent(lambda_arn):
             "Action": "sts:AssumeRole"
         }]
     }
-    
+
     agent_role_arn = create_iam_role(
         f"{PROJECT_NAME}-agent-role",
         agent_role_policy,
         "Bedrock agent role for support bot"
     )
-    
+
     # Create inline policy for agent
     agent_policy = {
         "Version": "2012-10-17",
@@ -223,7 +227,7 @@ def create_bedrock_agent(lambda_arn):
             }
         ]
     }
-    
+
     try:
         iam.put_role_policy(
             RoleName=f"{PROJECT_NAME}-agent-role",
@@ -232,24 +236,34 @@ def create_bedrock_agent(lambda_arn):
         )
     except ClientError as e:
         print_error(f"Failed to create agent policy: {e}")
-    
+
     # Wait for role to propagate
     time.sleep(10)
-    
-    # Create Bedrock agent
+
+    # Create Bedrock agent (without action groups first)
     try:
         response = bedrock_agent.create_agent(
             agentName=f"{PROJECT_NAME}-agent",
             agentResourceRoleArn=agent_role_arn,
             foundationModel=FOUNDATION_MODEL,
-            instruction="You are a helpful support assistant. Answer user questions to the best of your ability. If you cannot answer a question, use the fallback action to provide a helpful response.",
-            actionGroups=[{
-                'actionGroupName': 'fallback-action',
-                'description': 'Fallback action when no answer is found',
-                'actionGroupExecutor': {
+            instruction="You are a helpful support assistant. Answer user questions to the best of your ability."
+        )
+
+        agent_id = response['agent']['agentId']
+        print_status(f"Bedrock agent created: {agent_id}")
+
+        # Create action group separately
+        print_info("Creating action group...")
+        try:
+            bedrock_agent.create_agent_action_group(
+                agentId=agent_id,
+                agentVersion='DRAFT',
+                actionGroupName='fallback-action',
+                description='Fallback action when no answer is found',
+                actionGroupExecutor={
                     'lambda': lambda_arn
                 },
-                'apiSchema': {
+                apiSchema={
                     'payload': json.dumps({
                         "openapi": "3.0.0",
                         "info": {"title": "Fallback API", "version": "1.0.0"},
@@ -263,18 +277,18 @@ def create_bedrock_agent(lambda_arn):
                         }
                     })
                 }
-            }]
-        )
-        
-        agent_id = response['agent']['agentId']
-        print_status(f"Bedrock agent created: {agent_id}")
-        
+            )
+            print_status("Action group created")
+        except ClientError as e:
+            print_error(f"Failed to create action group: {e}")
+            # Continue anyway - agent still works without action group
+
         # Prepare agent
         print_info("Preparing agent...")
         bedrock_agent.prepare_agent(agentId=agent_id)
-        
+
         return agent_id
-        
+
     except ClientError as e:
         print_error(f"Failed to create Bedrock agent: {e}")
         raise
@@ -283,30 +297,30 @@ def main():
     """Main deployment function"""
     print("🚀 Deploying AWS Bedrock Support Bot (Python SDK)")
     print("=" * 50)
-    
+
     try:
         # Create S3 bucket
         bucket_name = create_s3_bucket()
-        
+
         # Create Lambda function
         lambda_arn = create_lambda_function()
-        
+
         # Create Bedrock agent (without Knowledge Base for now)
         agent_id = create_bedrock_agent(lambda_arn)
-        
+
         print("\n" + "=" * 50)
         print_status("Deployment completed successfully!")
         print(f"S3 Bucket: {bucket_name}")
         print(f"Lambda Function: {lambda_arn}")
         print(f"Bedrock Agent ID: {agent_id}")
-        
+
         print("\n🧪 Testing the agent...")
         print("You can test the agent using:")
         print(f"aws bedrock-agent-runtime invoke-agent --agent-id {agent_id} --agent-alias-id TSTALIASID --session-id test --input-text 'Hello'")
-        
+
         print("\n🗑️  To clean up:")
         print("Run the cleanup script when done testing")
-        
+
     except Exception as e:
         print_error(f"Deployment failed: {e}")
         raise
