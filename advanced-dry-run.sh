@@ -55,7 +55,8 @@ fi
 echo ""
 print_info "Test 3: OpenSearch Collection Creation Test"
 
-TEST_COLLECTION_NAME="test-permissions-$(date +%s)"
+# Use shorter name (max 32 chars for OpenSearch Serverless)
+TEST_COLLECTION_NAME="test-$(date +%s | tail -c 6)"
 
 # Create minimal security policies for test
 cat > test-encryption-policy.json << EOF
